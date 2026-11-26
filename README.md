@@ -85,6 +85,12 @@ To use:
   10. Use the INIT/START/STOP button as you would on the FTC Driver Station.
   11. If desired use the sliders to introduce random and systematic motor error, and inertia.
 
+If compilation reports `package javafx.beans.value does not exist` (or another missing `javafx` package),
+select **Liberica JDK 17 Full** in **File > Project Structure > Project > SDK**, and let both modules
+inherit the project SDK. Standard OpenJDK 17 and Liberica's standard package do not include JavaFX.
+In **Run > Edit Configurations > Main**, use the project SDK rather than overriding it with Java 8.
+No separate JavaFX library or VM options are needed with Liberica 17 Full.
+
 Acknowledgement: Thanks to Alan Smith for a contribution in 2019 for a contribution that provides compatibility with
 a wider variety of OpModes ("iterative" opmodes in addition to the original "linear" opmode support).
 
