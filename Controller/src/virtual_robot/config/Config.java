@@ -4,8 +4,7 @@ import com.qualcomm.robotcore.hardware.configuration.MotorType;
 import javafx.scene.image.Image;
 import virtual_robot.controller.Game;
 import virtual_robot.controller.VirtualBot;
-import virtual_robot.games.Decode;
-import virtual_robot.games.NoGame;
+import virtual_robot.games.Biobuzz;
 import virtual_robot.robots.classes.MecanumBot;
 
 /**
@@ -48,7 +47,7 @@ public class Config {
      * Define the game.  This must match the forGame attribute of the GameElementConfig annotation
      * on the VirtualGameElement implementations.
      */
-    public static final Game GAME = new NoGame();
+    public static final Game GAME = new Biobuzz();
 
     /**
      * Friction coefficient between field and robot wheels. A very high value will minimize the effect

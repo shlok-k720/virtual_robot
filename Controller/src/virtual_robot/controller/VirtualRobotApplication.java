@@ -35,6 +35,7 @@ public class VirtualRobotApplication extends Application {
 
     @Override
     public void stop() {
+        com.acmerobotics.dashboard.FtcDashboard.getInstance().shutdown();
         if (controllerHandle.executorService != null && !controllerHandle.executorService.isShutdown()) {
             controllerHandle.executorService.shutdownNow();
         }

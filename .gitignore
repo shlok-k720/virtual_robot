@@ -2,3 +2,9 @@ out/
 *.class
 .idea/vcs.xml
 .idea/workspace.xml
+.gradle/
+.gradle-bootstrap/
+build/
+*.iml
+.idea/modules.xml
+.idea/libraries/

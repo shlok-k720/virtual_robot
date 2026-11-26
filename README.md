@@ -66,17 +66,45 @@ of sample op modes are currently disabled; they can be re-enabled by commenting 
 number of robot configurations are also disabled. A robot configuration can be re-enabled by finding its class 
 in the virtual_robot.robots.classes package, and un-commenting its @BotConfig annotation.
 
-To use:
+## Build and run with Gradle
 
-  1. Install IntelliJ IDEA (or Android Studio), the Liberica 17 JDK (FULL VERSION!!), and the virtual_robot project,
-     per the "Detailed Installation Instructions" PDF.
+Use a **standard JDK 17**, not Liberica Full: Gradle now downloads JavaFX and the other library
+dependencies. Set `JAVA_HOME` to that JDK for terminal commands:
+
+```sh
+./gradlew clean build
+./gradlew check
+./gradlew run
+```
+
+In IntelliJ IDEA or Android Studio, open the root `build.gradle` **as a project** and import it as
+Gradle. The old standalone Controller/TeamCode IntelliJ modules are no longer used.
+In **Settings > Build, Execution, Deployment > Build Tools > Gradle**, select the **Wrapper**,
+set **Gradle JVM** to a standard **Java 17** SDK, and select **Gradle** for both
+**Build and run using** and **Run tests using**.
+
+Use the **elephant / Gradle Sync** action (or **Reload All Gradle Projects** in the Gradle tool
+window) after changing dependencies. The **hammer / Build Project** action then delegates to
+Gradle. Select **Main** and click Run to launch the simulator, or select **Check** to run the
+configured regression checks. These configurations run the Gradle `run` and `check` tasks;
+you can also find them in the Gradle tool window under **Tasks > application** and
+**Tasks > verification**, respectively.
+
+If a terminal build succeeds but the editor or IDE build cannot find
+`com.studiohartman.jamepad.Configuration` or a `javafx` package, reload the Gradle project.
+If the IDE still shows the old Controller/TeamCode modules, close the project and reopen the
+root `build.gradle` as a Gradle project. Do not manually attach the old `lib/*.jar` files.
+
+To use the simulator:
+
+  1. Import the Gradle project and configure Java 17 as described above.
   3. Write your OpModes in the org.firstinspires.ftc.teamcode package; make sure to include a @TeleOp or @Autonomous 
      annotation. These must extend the OpMode class (may either extend OpMode OR LinearOpMode). OpMode must provide 
      init() and loop() methods; LinearOpMode must provide runOpMode() method.
   4. You can either use the Virtual Gamepad (currently the default), or use one or two real Gamepads; to use real 
      gamepads, open Controller/src/virtual_robot/config/Config.java and set USE_VIRTUAL_GAMEPAD to false. Then plug 
      in your gamepad(s). 
-  5. Run the application (by clicking the green arrowhead at the toolbar).
+  5. Run the **Main** Gradle configuration (or `./gradlew run`).
   6. If using real gamepad(s), press start-A or start-B on gamepad(s) to select which is gamepad1 vs. gamepad2.
   7. Use Configuration dropdown box to select a robot configuration. The configuration file will be displayed.
   8. Use the Op Mode drop down box to select the desired OpMode.
@@ -85,12 +113,5 @@ To use:
   10. Use the INIT/START/STOP button as you would on the FTC Driver Station.
   11. If desired use the sliders to introduce random and systematic motor error, and inertia.
 
-If compilation reports `package javafx.beans.value does not exist` (or another missing `javafx` package),
-select **Liberica JDK 17 Full** in **File > Project Structure > Project > SDK**, and let both modules
-inherit the project SDK. Standard OpenJDK 17 and Liberica's standard package do not include JavaFX.
-In **Run > Edit Configurations > Main**, use the project SDK rather than overriding it with Java 8.
-No separate JavaFX library or VM options are needed with Liberica 17 Full.
-
 Acknowledgement: Thanks to Alan Smith for a contribution in 2019 for a contribution that provides compatibility with
 a wider variety of OpModes ("iterative" opmodes in addition to the original "linear" opmode support).
-

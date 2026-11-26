@@ -1,0 +1,33 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        mavenCentral()
+        google()
+        maven {
+            url = uri('https://maven.brott.dev')
+            content {
+                includeGroupByRegex 'com\\.acmerobotics\\..*'
+            }
+        }
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    name = 'pinnedDesktopEasyOpenCV'
+                    url = uri('https://raw.githubusercontent.com/Beta8397/virtual_robot/d0b92a353718c17bc181b88ae5be84f19d7fd5b8/lib')
+                    patternLayout { artifact '[artifact].[ext]' }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeModule('virtualrobot.compat', 'EasyOpenCV_v1.5.0_OBJ_bundle') }
+        }
+    }
+}
+
+rootProject.name = 'virtual_robot'

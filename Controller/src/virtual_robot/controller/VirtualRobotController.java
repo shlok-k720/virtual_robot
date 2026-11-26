@@ -4,6 +4,7 @@ import com.qualcomm.hardware.CommonOdometry;
 import com.qualcomm.robotcore.eventloop.opmode.*;
 import com.qualcomm.robotcore.hardware.*;
 import com.qualcomm.robotcore.util.Range;
+import com.studiohartman.jamepad.Configuration;
 import com.studiohartman.jamepad.ControllerIndex;
 import com.studiohartman.jamepad.ControllerManager;
 import com.studiohartman.jamepad.ControllerState;
@@ -49,6 +50,8 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import virtual_robot.robots.ControlsElements;
 import virtual_robot.robots.classes.MecanumBot;
 import virtual_robot.keyboard.KeyState;
+import virtual_robot.games.Biobuzz;
+import virtual_robot.games.biobuzz.BiobuzzPanel;
 
 import java.io.IOException;
 import java.lang.annotation.Annotation;
@@ -113,6 +116,8 @@ public class VirtualRobotController {
 
     //Virtual Robot Control Engine
     ScheduledExecutorService executorService = null;
+    private final java.util.concurrent.atomic.AtomicBoolean seasonDisplayPending =
+            new java.util.concurrent.atomic.AtomicBoolean();
     public static final double TIME_INTERVAL_MILLISECONDS = 20;
 
     //Random Number Generator
@@ -205,6 +210,32 @@ public class VirtualRobotController {
             gamePadHelper = new RealGamePadHelper();
         }
         gamePadExecutorService.scheduleAtFixedRate(gamePadHelper, 0, 20, TimeUnit.MILLISECONDS);
+        if (Config.GAME instanceof Biobuzz) {
+            // One existing-style physics scheduler, independent of OpMode INIT/START/STOP.
+            executorService = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "BIOBUZZ physics");
+                thread.setDaemon(true);
+                return thread;
+            });
+            executorService.scheduleAtFixedRate(() -> {
+                singlePhysicsCycle();
+                if (seasonDisplayPending.compareAndSet(false, true)) {
+                    Platform.runLater(() -> {
+                        try {
+                            Config.GAME.updateDisplay();
+                            if (bot != null) {
+                                if (((Biobuzz) Config.GAME).isRobotPowerAllowed())
+                                    bot.updateDisplay();
+                                if (opModeInitialized && pathLine.isVisible())
+                                    pathLine.getPoints().addAll(halfFieldWidth + bot.getX(), halfFieldWidth - bot.getY());
+                            }
+                        } finally {
+                            seasonDisplayPending.set(false);
+                        }
+                    });
+                }
+            }, 0, (long) TIME_INTERVAL_MILLISECONDS, TimeUnit.MILLISECONDS);
+        }
     }
 
     /**
@@ -464,6 +495,7 @@ public class VirtualRobotController {
     @FXML
     public void setConfig(ActionEvent event){
         if (opModeInitialized || opModeStarted) return;
+        synchronized (world) {
         if (bot != null) {
             bot.removeFromWorld();
             bot.removeFromDisplay(fieldPane);
@@ -476,12 +508,107 @@ public class VirtualRobotController {
         sldRandomMotorError.setValue(0.0);
         sldSystematicMotorError.setValue(0.0);
         sldMotorInertia.setValue(0.0);
+        if (Config.GAME instanceof Biobuzz && ((Biobuzz) Config.GAME).getPanel() != null)
+            Config.GAME.resetGameElements();
+        }
     }
 
 
     public Pane getFieldPane(){ return fieldPane; }
 
     public World<Body> getWorld(){ return world; }
+
+    /** Keeps both season controls and the original setup controls in one bounded sidebar. */
+    public void installBiobuzzPanel(BiobuzzPanel panel) {
+        javafx.scene.Node original = borderPane.getLeft();
+        borderPane.setLeft(null);
+        ((VBox) panel.getContent()).getChildren().addAll(new Separator(), original);
+        panel.setMaxHeight(Config.FIELD_WIDTH);
+        borderPane.setLeft(panel);
+    }
+
+    /** Centered inches and physical chassis dimensions, not display pixels. */
+    public double[] getBiobuzzRobotPose() {
+        synchronized (world) {
+            if (bot == null) return null;
+            double x = bot.getX() / VirtualField.PIXELS_PER_INCH;
+            double y = bot.getY() / VirtualField.PIXELS_PER_INCH;
+            double heading = bot.getHeadingRadians();
+            double width = 18, height = 18;
+            if (bot.chassisBody != null) {
+                x = bot.chassisBody.getTransform().getTranslationX() / 0.0254;
+                y = bot.chassisBody.getTransform().getTranslationY() / 0.0254;
+                heading = bot.chassisBody.getTransform().getRotationAngle();
+            }
+            if (bot.chassisRectangle != null) {
+                width = bot.chassisRectangle.getWidth() / 0.0254;
+                height = bot.chassisRectangle.getHeight() / 0.0254;
+            }
+            return new double[]{x, y, heading, width, height};
+        }
+    }
+
+    private List<Body> biobuzzRobotBodies() {
+        Biobuzz game = (Biobuzz) Config.GAME;
+        Set<Body> floor = new HashSet<>(game.getGroundBodies().values());
+        List<Body> bodies = new ArrayList<>();
+        for (Body body : world.getBodies())
+            if (!body.getMass().isInfinite() && !floor.contains(body)) bodies.add(body);
+        return bodies;
+    }
+
+    /** Do not reset encoders/IMUs merely because the match disables powered mechanisms. */
+    public void stopBiobuzzRobotMotion() {
+        synchronized (world) {
+            if (bot == null) return;
+            for (DcMotor motor : hardwareMap.dcMotor) motor.setPower(0);
+            for (CRServo servo : hardwareMap.crservo) servo.setPower(0);
+            for (Body body : biobuzzRobotBodies()) {
+                body.setLinearVelocity(0, 0);
+                body.setAngularVelocity(0);
+                body.clearAccumulatedForce();
+                body.clearAccumulatedTorque();
+            }
+        }
+    }
+
+    public boolean isBiobuzzRobotAtRest() {
+        synchronized (world) {
+            for (Body body : biobuzzRobotBodies())
+                if (body.getLinearVelocity().getMagnitude() >= 0.01 || Math.abs(body.getAngularVelocity()) >= 0.05)
+                    return false;
+            return true;
+        }
+    }
+
+    /** Practice setup translates the entire articulated robot, not just its chassis. */
+    public void resetBiobuzzRobotPose(double xInches, double yInches) {
+        synchronized (world) {
+            if (bot == null) return;
+            double[] old = getBiobuzzRobotPose();
+            stopBiobuzzRobotMotion();
+            for (Body body : biobuzzRobotBodies()) {
+                body.rotate(-old[2], old[0] * 0.0254, old[1] * 0.0254);
+                body.translate((xInches - old[0]) * 0.0254, (yInches - old[1]) * 0.0254);
+            }
+            bot.x = xInches * VirtualField.PIXELS_PER_INCH;
+            bot.y = yInches * VirtualField.PIXELS_PER_INCH;
+            bot.headingRadians = 0;
+        }
+    }
+
+    /** Lifecycle cleanup, also usable by embedded JavaFX integration tests. */
+    public void shutdownSimulation() {
+        if (executorService != null) executorService.shutdownNow();
+        gamePadExecutorService.shutdownNow();
+        try {
+            if (executorService != null) executorService.awaitTermination(2, TimeUnit.SECONDS);
+            gamePadExecutorService.awaitTermination(2, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        if (gamePadHelper != null) gamePadHelper.quit();
+    }
 
     @FXML
     private void handleDriverButtonAction(ActionEvent event){
@@ -521,8 +648,10 @@ public class VirtualRobotController {
                     Platform.runLater(updateDisplay);
                 }
             };
-            executorService = Executors.newSingleThreadScheduledExecutor();
-            executorService.scheduleAtFixedRate(singleCycle, 0, (long) TIME_INTERVAL_MILLISECONDS, TimeUnit.MILLISECONDS);
+            if (!(Config.GAME instanceof Biobuzz)) {
+                executorService = Executors.newSingleThreadScheduledExecutor();
+                executorService.scheduleAtFixedRate(singleCycle, 0, (long) TIME_INTERVAL_MILLISECONDS, TimeUnit.MILLISECONDS);
+            }
 
             opModeThread.start();
         } else if (!opModeStarted){
@@ -544,7 +673,7 @@ public class VirtualRobotController {
              *   -In a linear opmode, the above will cause stopRequested to become true, and interrupt runOpMode thread
              */
             opModeStarted = false;
-            if (!executorService.isShutdown()) executorService.shutdown();
+            if (!(Config.GAME instanceof Biobuzz) && !executorService.isShutdown()) executorService.shutdown();
             /*
              * This should not be necessary, but...
              */
@@ -556,7 +685,7 @@ public class VirtualRobotController {
             if (opModeThread.isAlive()) System.out.println("OpMode Thread Failed to Terminate.");
 
             bot.getHardwareMap().setActive(false);
-            bot.powerDownAndReset();
+            synchronized (world) { bot.powerDownAndReset(); }
             Config.GAME.stopGameElements();
             gamePadHelper.onOpModeFinished();
             initializeTelemetryTextArea();
@@ -647,9 +776,9 @@ public class VirtualRobotController {
         }
 
         bot.getHardwareMap().setActive(false);
-        bot.powerDownAndReset();
+        synchronized (world) { bot.powerDownAndReset(); }
         Config.GAME.stopGameElements();
-        if (!executorService.isShutdown()) executorService.shutdown();
+        if (!(Config.GAME instanceof Biobuzz) && !executorService.isShutdown()) executorService.shutdown();
         opModeInitialized = false;
         opModeStarted = false;
         gamePadHelper.onOpModeFinished();
@@ -666,6 +795,19 @@ public class VirtualRobotController {
     }
 
     private void singlePhysicsCycle(){
+        synchronized (world) {
+        if (Config.GAME instanceof Biobuzz) {
+            Biobuzz game = (Biobuzz) Config.GAME;
+            boolean powered = opModeInitialized && game.isRobotPowerAllowed();
+            if (!powered) stopBiobuzzRobotMotion();
+            if (game.isPhysicsFrozen()) return;
+            world.updatev(TIME_INTERVAL_MILLISECONDS / 1000.0);
+            // Skipping mechanism updates also stops positional servos and motor RUN_TO_POSITION.
+            if (powered) bot.updateStateAndSensors(TIME_INTERVAL_MILLISECONDS);
+            game.updateGameElementState(TIME_INTERVAL_MILLISECONDS);
+            if (!game.isRobotPowerAllowed()) stopBiobuzzRobotMotion();
+            return;
+        }
         // Update the physics engine. This will also call any collision/contact listeners that have been set.
         // These listeners will generally be in the bot class. They should record events within fields in the bot's
         // class, to be handled later in the bot.updateStateAndSensors call.
@@ -684,12 +826,18 @@ public class VirtualRobotController {
                 || Config.GAME.isHumanPlayerActionRequested() && opModeInitialized) {
             Config.GAME.updateHumanPlayerState(TIME_INTERVAL_MILLISECONDS);
         }
+        }
     }
 
     @FXML
     private void handleFieldMouseClick(MouseEvent arg){
         if (opModeInitialized || opModeStarted) return;
-        bot.positionWithMouseClick(arg);
+        synchronized (world) {
+            if (Config.GAME instanceof Biobuzz &&
+                    ((Biobuzz) Config.GAME).getModel().phase() !=
+                            virtual_robot.games.biobuzz.BiobuzzModel.Phase.PRACTICE) return;
+            bot.positionWithMouseClick(arg);
+        }
     }
 
 
@@ -720,11 +868,15 @@ public class VirtualRobotController {
 
     @FXML
     private void handleBtnHumanAction(ActionEvent event){
-        if (opModeInitialized) Config.GAME.requestHumanPlayerAction();
+        if (opModeInitialized || Config.GAME instanceof Biobuzz) Config.GAME.requestHumanPlayerAction();
     }
 
     @FXML
     private void handleBtnResetGameElements(ActionEvent event){
+        if (Config.GAME instanceof Biobuzz) {
+            Config.GAME.resetGameElements();
+            return;
+        }
         if (opModeInitialized) return;
         if (bot instanceof ControlsElements) ((ControlsElements) bot).clearLoadedElements(Config.GAME);
         Config.GAME.resetGameElements();
@@ -732,6 +884,10 @@ public class VirtualRobotController {
 
     @FXML
     private void handleBtnPreloadElementsOnBot(ActionEvent event){
+        if (Config.GAME instanceof Biobuzz) {
+            ((Biobuzz) Config.GAME).preload();
+            return;
+        }
         if (!opModeInitialized && bot instanceof ControlsElements){
             ((ControlsElements) bot).preloadElements(Config.GAME);
         }
@@ -983,11 +1139,22 @@ public class VirtualRobotController {
         public void onOpModeFinished();
     }
 
+    private boolean biobuzzDriverInputAllowed() {
+        if (!(Config.GAME instanceof Biobuzz)) return true;
+        synchronized (world) {
+            virtual_robot.games.biobuzz.BiobuzzModel model = ((Biobuzz) Config.GAME).getModel();
+            return model.poweredActionsAllowed() &&
+                    (model.phase() == virtual_robot.games.biobuzz.BiobuzzModel.Phase.PRACTICE ||
+                            model.phase() == virtual_robot.games.biobuzz.BiobuzzModel.Phase.TELEOP);
+        }
+    }
+
     public class VirtualGamePadHelper implements GamePadHelper {
 
         public void run() {
             VirtualGamePadController.ControllerState state = virtualGamePadController.getState();
-            gamePad1.update(state);
+            if (biobuzzDriverInputAllowed()) gamePad1.update(state);
+            else gamePad1.resetValues();
             virtualGamePadController.setOutputs(gamePad1);
             gamePad2.resetValues();
         }
@@ -1018,7 +1185,9 @@ public class VirtualRobotController {
         private Thread[] rumbleThreads = new Thread[2];
 
         public RealGamePadHelper(){
-            controller = new ControllerManager(2);
+            Configuration configuration = new Configuration();
+            configuration.maxNumControllers = 2;
+            controller = new ControllerManager(configuration);
             controller.initSDLGamepad();
         }
 
@@ -1076,6 +1245,11 @@ public class VirtualRobotController {
             }
 
 
+            if (!biobuzzDriverInputAllowed()) {
+                gamePad1.resetValues();
+                gamePad2.resetValues();
+                return;
+            }
             if (gamePad1Index == 0) gamePad1.update(state0);
             else if (gamePad1Index == 1) gamePad1.update(state1);
             else gamePad1.resetValues();

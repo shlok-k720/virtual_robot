@@ -1,0 +1,253 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+import org.gradle.api.artifacts.transform.CacheableTransform
+import org.gradle.api.artifacts.transform.InputArtifact
+import org.gradle.api.artifacts.transform.TransformAction
+import org.gradle.api.artifacts.transform.TransformOutputs
+import org.gradle.api.artifacts.transform.TransformParameters
+import org.gradle.api.artifacts.type.ArtifactTypeDefinition
+
+plugins {
+    id 'application'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+if (JavaVersion.current() != JavaVersion.VERSION_17) {
+    throw new GradleException('Run Gradle with a standard Java 17 JDK.')
+}
+if (new File(System.getProperty('java.home'), 'jmods/javafx.base.jmod').exists() ||
+        ModuleLayer.boot().findModule('javafx.base').isPresent()) {
+    throw new GradleException('Use a standard Java 17 JDK, not a JavaFX-bundled Full JDK.')
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+javafx {
+    version = '17.0.19'
+    modules = ['javafx.controls', 'javafx.fxml']
+}
+
+application {
+    mainClass = 'virtual_robot.controller.VirtualRobotApplication'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['Controller/src', 'TeamCode/src']
+            // These implementations are supplied by the published Dashboard artifacts.
+            exclude 'com/acmerobotics/dashboard/canvas/**'
+            exclude 'com/acmerobotics/dashboard/telemetry/TelemetryPacket.java'
+            exclude 'com/acmerobotics/dashboard/telemetry/MultipleTelemetry.java'
+            exclude 'com/acmerobotics/dashboard/config/Config.java'
+        }
+        resources {
+            srcDirs = ['Controller/src', 'TeamCode/src']
+            exclude '**/*.java', '**/*.class'
+        }
+    }
+    test {
+        java.srcDirs = ['Controller/test']
+    }
+}
+
+@CacheableTransform
+abstract class DesktopAarJar implements TransformAction<DesktopAarJar.Parameters> {
+    interface Parameters extends TransformParameters {
+        @Input
+        ListProperty<String> getClassPrefixes()
+    }
+
+    @InputArtifact
+    @PathSensitive(PathSensitivity.NONE)
+    abstract Provider<FileSystemLocation> getInputArtifact()
+
+    @Override
+    void transform(TransformOutputs outputs) {
+        def aar = inputArtifact.get().asFile
+        def entries = new TreeMap<String, byte[]>()
+        new ZipFile(aar).withCloseable { archive ->
+            def classes = archive.getEntry('classes.jar')
+            if (classes == null) {
+                throw new GradleException("No classes.jar in ${aar.name}")
+            }
+            new ZipInputStream(archive.getInputStream(classes)).withCloseable { jar ->
+                ZipEntry entry
+                while ((entry = jar.nextEntry) != null) {
+                    if (!entry.directory && entry.name.endsWith('.class') &&
+                            parameters.classPrefixes.get().any { prefix ->
+                                prefix.endsWith('/') ? entry.name.startsWith(prefix) :
+                                        entry.name == "${prefix}.class" || entry.name.startsWith("${prefix}\$")
+                            }) {
+                        if (entries.put(entry.name, jar.readAllBytes()) != null) {
+                            throw new GradleException("Duplicate class ${entry.name}")
+                        }
+                    }
+                }
+            }
+        }
+        if (entries.isEmpty()) {
+            throw new GradleException("No desktop classes selected from ${aar.name}")
+        }
+        def output = outputs.file("${aar.name - '.aar'}-desktop.jar")
+        new ZipOutputStream(new FileOutputStream(output)).withCloseable { jar ->
+            entries.each { path, bytes ->
+                def entry = new ZipEntry(path)
+                entry.time = 0L
+                jar.putNextEntry(entry)
+                jar.write(bytes)
+                jar.closeEntry()
+            }
+        }
+    }
+}
+
+def aarJar = { String name, String coordinate, List<String> prefixes ->
+    def artifactType = ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE
+    String desktopType = "desktop-${name}"
+    // Resolution also runs during IDE sync; task outputs would remain missing after clean.
+    dependencies.registerTransform(DesktopAarJar) {
+        from.attribute(artifactType, 'aar')
+        to.attribute(artifactType, desktopType)
+        parameters.classPrefixes.set(prefixes)
+    }
+    def donor = configurations.create("${name}Donor") {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+        attributes.attribute(artifactType, desktopType)
+    }
+    dependencies.add(donor.name, "${coordinate}@aar")
+    dependencies.add('implementation', files(donor))
+}
+
+aarJar('dashboard', 'com.acmerobotics.dashboard:dashboard:0.4.16', [
+        'com/acmerobotics/dashboard/config/Config',
+        'com/acmerobotics/dashboard/telemetry/MultipleTelemetry'
+])
+
+// Only JVM helpers are donated: no Android tuner, webserver, or FlightRecorder.
+aarJar('roadRunner', 'com.acmerobotics.roadrunner:ftc:0.1.25', [
+        'com/acmerobotics/roadrunner/ftc/Actions',
+        'com/acmerobotics/roadrunner/ftc/Encoder',
+        'com/acmerobotics/roadrunner/ftc/EncoderGroup',
+        'com/acmerobotics/roadrunner/ftc/EncoderRef',
+        'com/acmerobotics/roadrunner/ftc/EncodersKt',
+        'com/acmerobotics/roadrunner/ftc/RawEncoder',
+        'com/acmerobotics/roadrunner/ftc/OverflowEncoder',
+        'com/acmerobotics/roadrunner/ftc/PositionVelocityPair',
+        'com/acmerobotics/roadrunner/ftc/RollingThreeMedian',
+        'com/acmerobotics/roadrunner/ftc/LazyImu',
+        'com/acmerobotics/roadrunner/ftc/LazyImuKt',
+        'com/acmerobotics/roadrunner/ftc/OTOSKt',
+        'com/acmerobotics/roadrunner/ftc/OTOSIMU',
+        'com/acmerobotics/roadrunner/ftc/OTOSEncoderGroup',
+        'com/acmerobotics/roadrunner/ftc/ParallelOTOSEncoder',
+        'com/acmerobotics/roadrunner/ftc/PerpendicularOTOSEncoder'
+])
+aarJar('pedroRevhub', 'com.pedropathing:revhub:3.0.0', ['com/pedropathing/revhub/'])
+aarJar('ivyPedro', 'com.pedropathing.ivy:pedro:1.1.1', ['com/pedropathing/ivy/pedro/'])
+
+dependencies {
+    implementation 'com.acmerobotics.dashboard:core:0.4.16'
+    implementation 'com.google.code.gson:gson:2.8.6'
+    implementation 'com.acmerobotics.roadrunner:core:1.0.1'
+    implementation 'com.acmerobotics.roadrunner:actions:1.0.1'
+    implementation 'com.pedropathing:core:3.0.0'
+    implementation 'com.pedropathing.ivy:core:1.1.1'
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.3.21'
+    implementation 'com.badlogicgames.jamepad:jamepad:2.30.0.0'
+    implementation 'org.dyn4j:dyn4j:4.1.4'
+    implementation 'org.reflections:reflections:0.9.11'
+    implementation 'androidx.annotation:annotation-jvm:1.9.1'
+    implementation 'virtualrobot.compat:EasyOpenCV_v1.5.0_OBJ_bundle:1.5.0@jar'
+    // AprilTagDetectorJNI still imports this build-time type; do not ship it at runtime.
+    compileOnly('com.badlogicgames.gdx:gdx-jnigen:2.2.0') { transitive = false }
+}
+
+def javafxVerification = ['linux', 'linux-aarch64', 'mac', 'mac-aarch64', 'win'].collect { platform ->
+    def platformArtifacts = configurations.create("javafxVerification${platform.replace('-', '_')}") {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
+    ['base', 'graphics', 'controls', 'fxml'].each { module ->
+        dependencies.add(platformArtifacts.name, "org.openjfx:javafx-${module}:17.0.19:${platform}@jar")
+    }
+    platformArtifacts
+}
+tasks.register('resolveJavafxPlatforms') {
+    inputs.files(javafxVerification)
+    doLast { javafxVerification.each { it.files.each { logger.info("Verified ${it.name}") } } }
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.register('verifyDesktopClasspath') {
+    dependsOn configurations.runtimeClasspath
+    doLast {
+        def seen = [:]
+        configurations.runtimeClasspath.files.findAll { it.name.endsWith('.jar') }.each { file ->
+            new ZipFile(file).withCloseable { jar ->
+                jar.entries().each { entry ->
+                    if (entry.name.endsWith('.class') && !entry.name.startsWith('META-INF/') &&
+                            entry.name != 'module-info.class') {
+                        if (entry.name.startsWith('android/') ||
+                                entry.name.startsWith('com/qualcomm/') ||
+                                entry.name.startsWith('org/firstinspires/ftc/robotcore/')) {
+                            throw new GradleException("Desktop classpath contains SDK/Android class ${entry.name} in ${file.name}")
+                        }
+                        def previous = seen.put(entry.name, file.name)
+                        if (previous != null) {
+                            throw new GradleException("Duplicate class ${entry.name} in ${previous} and ${file.name}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+tasks.register('simulatorCompatibilityTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'virtual_robot.util.SimulatedLazyImuTest'
+    enableAssertions = true
+}
+
+tasks.named('check') { dependsOn 'verifyDesktopClasspath', 'simulatorCompatibilityTest' }
+tasks.named('startScripts') {
+    doLast {
+        def javafxJars = configurations.runtimeClasspath.files.findAll {
+            it.name.startsWith('javafx-') && it.name.endsWith('.jar')
+        }.collect { it.name }.sort()
+        def unixModulePath = javafxJars.collect { "\$APP_HOME/lib/${it}" }.join(':')
+        def windowsModulePath = javafxJars.collect { "%APP_HOME%\\lib\\${it}" }.join(';')
+        if (javafxJars.size() != 4 ||
+                !unixScript.text.contains('-classpath "$CLASSPATH"') ||
+                !windowsScript.text.contains('-classpath "%CLASSPATH%"')) {
+            throw new GradleException('Cannot configure JavaFX distribution module paths')
+        }
+        unixScript.text = unixScript.text.replace(
+                '-classpath "$CLASSPATH"',
+                "--module-path \"${unixModulePath}\" --add-modules javafx.controls,javafx.fxml -classpath \"\$CLASSPATH\"")
+        windowsScript.text = windowsScript.text.replace(
+                '-classpath "%CLASSPATH%"',
+                "--module-path \"${windowsModulePath}\" --add-modules javafx.controls,javafx.fxml -classpath \"%CLASSPATH%\"")
+    }
+}
+tasks.named('run') {
+    dependsOn 'verifyDesktopClasspath'
+}
